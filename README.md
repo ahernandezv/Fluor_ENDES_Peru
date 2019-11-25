@@ -5,5 +5,5 @@ Hernández-Vásquez A, Azañedo D. Cepillado dental y niveles de flúor en pasta
 Peru Med Exp Salud Publica. 2019;36(4):xxx-xx. doi: xxx.
 
 # Contacto
-Akram Hernández-Vásquez (akram.hernandez.v@upch.pe)
-Diego Azañedo (diego.azanedo@gmail.com)
+- Akram Hernández-Vásquez (akram.hernandez.v@upch.pe)
+- Diego Azañedo (diego.azanedo@gmail.com)
