@@ -1,1 +1,285 @@
 
+# Nombre:     Script de cepillado dental y concentración de fluor en pastas dentales, ENDES 2018
+# Versión:    1.0
+# Autores:    Akram Hernández-Vásquez & Diezo Azañedo
+# Fecha:      15/10/19
+
+#---------------------------------------------------------
+# Para limpiar el workspace, por si hubiera algun dataset 
+# o informacion cargada
+rm(list = ls())
+
+##############################
+# 1. Instalación de paquetes #
+##############################
+
+library(tidyverse)
+library(haven)
+library(survey)
+library(srvyr)
+library(sjlabelled)
+library(labelled)
+library(gdata)
+
+##############################
+# 2. Cargamos bases de datos #
+##############################
+
+# Se descargan las bases de interés de la página web del Instituto Nacional de Estadística e Informática
+# http://iinei.inei.gob.pe/microdatos/
+
+# Especificamos el directorio (Nota: cambiar según directorio del interesado)
+setwd("D:/ENDES/2018/Bases2018")
+
+#Cargamos la base de datos "CSALUD8"
+SALUD_NINO<- read_sav("CSALUD08.SAV", encoding = 'latin1')
+#Cargamos la base de datos "RECH23"
+VIVIENDA  <- read_sav("RECH23.SAV", encoding = 'latin1')
+#Cargamos la base de datos "RECH0"
+HOGAR     <- read_sav("RECH0.SAV", encoding = 'latin1')
+#Cargamos la base de datos "RECH4"
+SEGURO    <- read_sav("RECH4.SAV", encoding = 'latin1')  
+#Cargamos la base de datos "RECH1"
+PERSONA   <- read_sav("RECH1.SAV", encoding = 'latin1')
+#Cargamos la base de datos "RECH1" para obtener la educación del responsable
+EDUCACION <- read_sav("RECH1.SAV", encoding = 'latin1')
+
+# Transformamos las variables de unión
+SALUD_NINO$HVIDX  <- SALUD_NINO$QS801
+SEGURO$HVIDX      <- SEGURO$IDXH4
+PERSONA$QS802     <- PERSONA$HVIDX
+EDUCACION$QS802   <- EDUCACION$HVIDX
+EDUCACION$niveduc <- EDUCACION$HV106
+EDUCACION$HVIDX   <- NULL
+
+# Realizamos la unión mediante los identificadores o llaves HHID HVIDX y QS802
+BASE1 <- inner_join(EDUCACION, SALUD_NINO, by = c("HHID","QS802"))
+BASE2 <- inner_join(BASE1, PERSONA, by = c("HHID","HVIDX"))
+BASE3 <- inner_join(BASE2, SEGURO, by = c("HHID","HVIDX"))
+BASE4 <- inner_join(HOGAR, VIVIENDA, by = "HHID")
+BASE5 <- inner_join(BASE3,BASE4,by = "HHID")
+
+# Filtramos la base de datos
+BASE_FINAL <- filter(BASE5,QS802A == 1)       # Seleccionamos las entrevistas completas de la pregunta QS802A (n = 45 487)
+BASE_FINAL <- filter(BASE_FINAL,QS802D >= 1)  # Seleccionamos a los menores de un ano (n = 41 399)
+BASE_FINAL <- filter(BASE_FINAL,niveduc < 8)  # Seleccionamos a los menores de un ano (n = 41 331)
+
+# Descartamos las bases de datos que ya no son necesarias para ahorrar memoria 
+rm(SALUD_NINO,BASE1,BASE2,BASE3,BASE4,BASE5,PERSONA,HOGAR,EDUCACION,VIVIENDA,MUJER)
+
+##############################################
+# 3. Preparación de las variables de interés #
+##############################################
+
+BASEFIN <- BASE_FINAL %>%
+  mutate(
+    #Variable de interés: Concentración
+    concentracion =  case_when(QS840B == 1 ~ "Adecuada", 
+                               QS840B == 2 | QS840B == 3 ~ "Inadecuada",
+                               QS840B == 5 | QS840B == 6 ~ "No mostro/no usa",
+                               QS840B == 4 | QS840B == 7 | QS840B == 8 | QS840B == 9 ~ "Ilegible",
+                               QS809 == 2 ~ "No cepillado"),
+    #Variables de estratificación: quintil, educación, sexo, área de residencia, atención odontológica, seguro de salud, edad, dominio de residencia
+    quintil = case_when(HV270 == 1 ~ "Q1", 
+                        HV270 == 2 ~ "Q2",
+                        HV270 == 3 ~ "Q3",
+                        HV270 == 4 ~ "Q4",
+                        HV270 == 5 ~ "Q5"),
+    educacion = as.factor(niveduc), 
+    sexo = case_when(HV104.y == 1 ~ "Hombre", 
+                     HV104.y == 2 ~ "Mujer"),
+    urbrur = case_when(HV025 == 1 ~ "Urbano", 
+                       HV025 == 2 ~ "Rural"), 
+    aten6mes = case_when(QS803 == 1 & (QS804U==1 & QS804C<=6) ~ "Si",
+                         QS803 == 1 & (QS804U==1 & QS804C>6) | QS803 == 2 | QS804U >= 2 ~ "No"),
+    seguro =  case_when(SH11Z==0 ~ "Si", 
+                        SH11Z==1 ~ "No"),
+    edad = case_when(QS802D < 6 ~ "1-5", QS802D >= 6 ~ "6-11"),
+    regionNatural =  case_when(SHREGION == 1 ~ "Lima Metropolitana", 
+                               SHREGION == 2 ~ "Resto Costa",
+                               SHREGION == 3 ~ "Sierra",
+                               SHREGION == 4 ~ "Selva",
+                               SHREGION == 5 ~ "Selva"),
+    #Variables de diseño: conglomerado, estrato, y ponderación
+    conglomerado = QHCLUSTER,
+    estrato = HV022,
+    ponderacion = Pesomen12/10^6) %>% 
+  select(HHID:ponderacion)
+
+# Filtramos la base de datos con los registros completos de la variable "concentracion"
+BASEFIN %>% count(concentracion)
+BASEFIN <- subset(BASEFIN,concentracion>=1) # Seleccionamos a los que tienen información completa en concentracion (n = 41 330)
+
+########################################
+# 4. Especificando el diseño muestral  #
+########################################
+
+#----------------------------------------
+#Seteamos la encuesta mediante "as_survey_design"
+#Incluir las variables conglomerado, estrato, ponderacion
+
+modelo <- as_survey_design(BASEFIN, id = conglomerado, strata = estrato,
+                           weights = ponderacion)
+
+########################################
+# 5. Resultados de la Tabla 1          #
+########################################
+
+#----------------------------------------
+#Generando las proporciones ponderadas del sexo
+modelo %>%
+  group_by(sexo) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(2:5,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la edad
+modelo %>%
+  group_by(edad) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(2:5,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la atencion odontológica
+modelo %>%
+  group_by(aten6mes) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(2:5,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la tenencia de seguro
+modelo %>%
+  group_by(seguro) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(2:5,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas del nivel educativo del responsable del menor
+modelo %>%
+  group_by(educacion) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(2:5,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas del indice de riqueza
+modelo %>%
+  group_by(quintil) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(2:5,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas del dominio de residencia
+modelo %>%
+  group_by(regionNatural) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(2:5,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas del área de residencia
+modelo %>%
+  group_by(urbrur) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(2:5,function(x) x * 100)
+
+
+########################################
+# 6. Resultados de la Tabla 2          #
+########################################
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la concentración
+modelo %>%
+  group_by(concentracion) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(2:5,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la concentración segun sexo
+modelo %>%
+  group_by(sexo, concentracion) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(3:6,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la concentración segun edad
+modelo %>%
+  group_by(edad, concentracion) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(3:6,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la concentración segun área de residencia
+modelo %>%
+  group_by(aten6mes, concentracion) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(3:6,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la concentración segun seguro
+modelo %>%
+  group_by(seguro, concentracion) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(3:6,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la concentración segun educación
+modelo %>%
+  group_by(educacion, concentracion) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(3:6,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la concentración segun quintil
+modelo %>%
+  group_by(quintil, concentracion) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(3:6,function(x) x * 100)->tabla   # Se agrega -> tabla con la finalidad de que se
+                                              # muestren todas las filas en un tabla
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la concentración segun dominio geográfico
+modelo %>%
+  group_by(regionNatural, concentracion) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(3:6,function(x) x * 100)
+
+#----------------------------------------
+#Generando las proporciones ponderadas de la concentración segun área de residencia
+modelo %>%
+  group_by(urbrur, concentracion) %>%
+  summarize(proportion = survey_mean(vartype = c("ci","cv")),
+            total = survey_total(),
+            n = unweighted(n()))  %>% 
+  mutate_at(3:6,function(x) x * 100)
